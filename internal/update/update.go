@@ -1,6 +1,11 @@
 // Package update checks GitHub Releases for a newer tmax and can replace the
 // running binary in place. The launch-time check is throttled to once a day via
 // a small cache file and is fully skippable with TMAX_NO_UPDATE_CHECK.
+//
+// Version resolution deliberately uses the github.com /releases/latest redirect
+// rather than api.github.com: the unauthenticated REST API is rate-limited to
+// 60 requests/hour per IP and returns 403 on shared/NAT/corporate networks. The
+// redirect (the same mechanism install.sh uses) has no such limit.
 package update
 
 import (
@@ -15,7 +20,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -30,46 +37,59 @@ const Repo = "o1x3/tmax"
 // once per window.
 const checkInterval = 24 * time.Hour
 
+// userAgent is sent on every request — GitHub flags/blocks the default Go
+// user-agent, and a real one is required by the API.
+const userAgent = "tmax (+https://github.com/o1x3/tmax)"
+
 // ErrUpToDate is returned by SelfUpdate when the latest release is already
 // installed.
 var ErrUpToDate = errors.New("already up to date")
 
-// Release is the slice of the GitHub API response we care about.
-type Release struct {
-	TagName string `json:"tag_name"`
-	HTMLURL string `json:"html_url"`
-	Assets  []struct {
-		Name string `json:"name"`
-		URL  string `json:"browser_download_url"`
-	} `json:"assets"`
+// httpGet issues a GET with our user-agent. When noFollow is set, redirects are
+// returned rather than followed (used to read the /releases/latest Location).
+func httpGet(ctx context.Context, rawURL string, noFollow bool) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", userAgent)
+	client := http.DefaultClient
+	if noFollow {
+		client = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error {
+			return http.ErrUseLastResponse
+		}}
+	}
+	return client.Do(req)
 }
 
-// Latest fetches the most recent published release.
-func Latest(ctx context.Context) (*Release, error) {
-	url := "https://api.github.com/repos/" + Repo + "/releases/latest"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// LatestVersion resolves the newest release tag via the /releases/latest
+// redirect (302 -> /releases/tag/<tag>). No api.github.com, so no 60/hour limit.
+func LatestVersion(ctx context.Context) (string, error) {
+	resp, err := httpGet(ctx, "https://github.com/"+Repo+"/releases/latest", true)
 	if err != nil {
-		return nil, err
-	}
-	req.Header.Set("Accept", "application/vnd.github+json")
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return nil, err
+		return "", err
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("github returned %s", resp.Status)
+	io.Copy(io.Discard, io.LimitReader(resp.Body, 1<<16))
+
+	if resp.StatusCode < 300 || resp.StatusCode >= 400 {
+		return "", fmt.Errorf("could not resolve latest release (HTTP %d)", resp.StatusCode)
 	}
-	var r Release
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 1<<20)).Decode(&r); err != nil {
-		return nil, err
+	loc := resp.Header.Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil || loc == "" {
+		return "", errors.New("no redirect to a release tag")
 	}
-	return &r, nil
+	tag := path.Base(u.Path)
+	if tag == "" || tag == "latest" || tag == "releases" {
+		return "", errors.New("no releases published yet")
+	}
+	return tag, nil
 }
 
 // Check returns the latest version tag and whether it is newer than current.
 // It is best-effort and throttled: when the cached check is fresh it never
-// touches the network, and any error yields ("", false) rather than noise.
+// touches the network, and any error yields the cached value rather than noise.
 func Check(current string) (latest string, newer bool) {
 	if os.Getenv("TMAX_NO_UPDATE_CHECK") != "" {
 		return "", false
@@ -82,11 +102,17 @@ func Check(current string) (latest string, newer bool) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
 	defer cancel()
 	st.CheckedAt = time.Now()
-	if rel, err := Latest(ctx); err == nil {
-		st.Latest = rel.TagName
+	if tag, err := LatestVersion(ctx); err == nil {
+		st.Latest = tag
 	}
 	saveState(st) // record the attempt either way so we don't retry every launch
 	return st.Latest, isNewer(current, st.Latest)
+}
+
+// assetURL builds the stable per-release download URL (same names install.sh and
+// goreleaser use, e.g. tmax_darwin_arm64.tar.gz).
+func assetURL(tag, name string) string {
+	return "https://github.com/" + Repo + "/releases/download/" + tag + "/" + name
 }
 
 // SelfUpdate downloads the latest release archive for this OS/arch, verifies its
@@ -96,40 +122,24 @@ func SelfUpdate(current string) (string, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	defer cancel()
 
-	rel, err := Latest(ctx)
+	tag, err := LatestVersion(ctx)
 	if err != nil {
 		return "", err
 	}
-	if current != "dev" && !isNewer(current, rel.TagName) {
-		return rel.TagName, ErrUpToDate
+	if current != "dev" && !isNewer(current, tag) {
+		return tag, ErrUpToDate
 	}
 
 	asset := fmt.Sprintf("tmax_%s_%s.tar.gz", runtime.GOOS, runtime.GOARCH)
-	var binURL, sumURL string
-	for _, a := range rel.Assets {
-		switch a.Name {
-		case asset:
-			binURL = a.URL
-		case "checksums.txt":
-			sumURL = a.URL
-		}
-	}
-	if binURL == "" {
-		return "", fmt.Errorf("no prebuilt binary for %s/%s in %s", runtime.GOOS, runtime.GOARCH, rel.TagName)
-	}
-
-	archive, err := download(ctx, binURL)
+	archive, err := download(ctx, assetURL(tag, asset))
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("no prebuilt binary for %s/%s in %s: %w", runtime.GOOS, runtime.GOARCH, tag, err)
 	}
-	if sumURL != "" {
-		sums, err := download(ctx, sumURL)
-		if err == nil {
-			if want := checksumFor(sums, asset); want != "" {
-				got := sha256.Sum256(archive)
-				if hex.EncodeToString(got[:]) != want {
-					return "", fmt.Errorf("checksum mismatch for %s — aborting", asset)
-				}
+	if sums, err := download(ctx, assetURL(tag, "checksums.txt")); err == nil {
+		if want := checksumFor(sums, asset); want != "" {
+			got := sha256.Sum256(archive)
+			if hex.EncodeToString(got[:]) != want {
+				return "", fmt.Errorf("checksum mismatch for %s — aborting", asset)
 			}
 		}
 	}
@@ -141,7 +151,7 @@ func SelfUpdate(current string) (string, error) {
 	if err := replaceSelf(bin); err != nil {
 		return "", err
 	}
-	return rel.TagName, nil
+	return tag, nil
 }
 
 // replaceSelf writes bin next to the current executable and atomically renames
@@ -177,18 +187,14 @@ func replaceSelf(bin []byte) error {
 	return nil
 }
 
-func download(ctx context.Context, url string) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := http.DefaultClient.Do(req)
+func download(ctx context.Context, rawURL string) ([]byte, error) {
+	resp, err := httpGet(ctx, rawURL, false)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("download %s: %s", url, resp.Status)
+		return nil, fmt.Errorf("download %s: %s", rawURL, resp.Status)
 	}
 	return io.ReadAll(io.LimitReader(resp.Body, 64<<20))
 }
