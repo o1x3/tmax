@@ -16,6 +16,9 @@ var ansiX = regexp.MustCompile(`\x1b\[[0-9;]*m`)
 
 func dw(s string) int { return lipgloss.Width(ansiX.ReplaceAllString(s, "")) }
 
+// checkUniform renders every tab under both colour profiles and asserts the
+// card never panics and never exceeds the width budget. Lines are intentionally
+// ragged now (no background ⇒ no need for uniform width).
 func checkUniform(t *testing.T, name string, s core.Summary) {
 	for _, prof := range []termenv.Profile{termenv.TrueColor, termenv.Ascii} {
 		lipgloss.SetColorProfile(prof)
@@ -26,16 +29,10 @@ func checkUniform(t *testing.T, name string, s core.Summary) {
 						t.Errorf("PANIC %s prof=%v tab=%s: %v", name, prof, tab, r)
 					}
 				}()
-				out := RenderCard(s, tab)
-				lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-				w0 := dw(lines[0])
-				for i, l := range lines {
-					if w := dw(l); w != w0 {
-						t.Errorf("WIDTH %s prof=%v tab=%s line %d width %d != %d: %q", name, prof, tab, i, w, w0, l)
+				for i, l := range strings.Split(RenderCard(s, tab), "\n") {
+					if w := dw(l); w > 80 {
+						t.Errorf("OVER80 %s prof=%v tab=%s line %d w=%d: %q", name, prof, tab, i, w, l)
 					}
-				}
-				if w0 > 80 {
-					t.Errorf("OVER80 %s prof=%v tab=%s w=%d", name, prof, tab, w0)
 				}
 			}()
 		}

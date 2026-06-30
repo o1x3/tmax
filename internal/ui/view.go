@@ -19,17 +19,15 @@ const (
 )
 
 const (
-	innerWidth = 71 // content width inside the card padding
-	hPad       = 2  // horizontal card padding
-	logoW      = 36 // neofetch logo column (ANSI-Shadow wordmark is exactly 36)
-	dividerW   = 3  // " │ " vertical rule between logo and info
-	infoW      = innerWidth - logoW - dividerW // 32: the key·value info column
-	gutterW    = 4  // weekday gutter ("Mon ") on the contribution graph
+	contentW  = 72 // nominal width used only to right-align the range + footer
+	logoW     = 36 // neofetch logo column (ANSI-Shadow wordmark is exactly 36)
+	bannerGap = 3  // spaces between logo and info columns
+	infoW     = 33 // the key·value info column (values right-align here)
+	gutterW   = 4  // weekday gutter ("Mon ") on the contribution graph
 )
 
 // logoArt is the "tmax" wordmark (pyfiglet "ANSI Shadow"). Every row is exactly
-// logoW cells wide; it is recoloured per harness via the accent, never stored
-// per-harness.
+// logoW cells wide; recoloured per harness via the accent, never per-harness.
 var logoArt = [6]string{
 	"████████╗███╗   ███╗ █████╗ ██╗  ██╗",
 	"╚══██╔══╝████╗ ████║██╔══██╗╚██╗██╔╝",
@@ -39,107 +37,68 @@ var logoArt = [6]string{
 	"   ╚═╝   ╚═╝     ╚═╝╚═╝  ╚═╝╚═╝  ╚═╝",
 }
 
-// styled is the workhorse: a card-background style with the given foreground.
-// Every visible run sets Background(cardBG) so trailing/leading fill never
-// shows the terminal's default background (which would make the card ragged).
-func styled(fg lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Background(cardBG).Foreground(fg)
-}
+func styled(fg lipgloss.TerminalColor) lipgloss.Style { return lipgloss.NewStyle().Foreground(fg) }
 
 func ascii() bool { return lipgloss.ColorProfile() == termenv.Ascii }
 
-// RenderCard renders the full neofetch-style dashboard for a summary.
+// RenderCard renders the full dashboard for a summary. No background, no border:
+// every line is foreground colour on the terminal's own background, with a
+// ragged right edge — it sits in your terminal the way fastfetch does.
 func RenderCard(s core.Summary, tab string) string {
 	th := ThemeFor(s.Harness)
 
-	controls := renderHeader(th, tab, s.Range)
-	banner := renderBanner(th, s)
-
-	var mid string
-	if tab == TabModels {
-		mid = renderModels(th, s)
-	} else {
-		mid = lipgloss.JoinVertical(lipgloss.Left,
-			sectionTitle(th, s.Heatmap.Weeks),
-			renderHeatmap(th, s.Heatmap),
-		)
+	blocks := []string{
+		renderHeader(th, tab, s.Range),
+		"",
+		renderBanner(th, s),
+		"",
 	}
+	if tab == TabModels {
+		blocks = append(blocks, renderModels(th, s))
+	} else {
+		blocks = append(blocks, sectionTitle(th, s.Heatmap.Weeks), renderHeatmap(th, s.Heatmap))
+	}
+	blocks = append(blocks, "", renderFooter(th, s), "", renderSwatches())
 
-	footer := renderFooter(th, s)
-	swatches := renderSwatches()
-
-	content := lipgloss.JoinVertical(lipgloss.Left,
-		controls,
-		"",
-		banner,
-		"",
-		mid,
-		"",
-		footer,
-		"",
-		swatches,
-	)
-
-	card := lipgloss.NewStyle().
-		Background(cardBG).
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(border).
-		BorderBackground(cardBG).
-		Width(innerWidth + 2*hPad). // content area == innerWidth; short lines fill with cardBG
-		Padding(1, hPad)
-
-	return card.Render(content)
+	return strings.Join(blocks, "\n")
 }
 
-// ---- header: tabs (left) + range segmented control (right) ----
-
-func renderHeader(th Theme, tab, rng string) string {
-	active := lipgloss.NewStyle().
-		Background(th.Accent).Foreground(pillText).Bold(true).Padding(0, 1)
-	inactive := lipgloss.NewStyle().
-		Foreground(label).Background(cardBG).Padding(0, 2)
-
-	// Literal brackets on the active tab so the selection still reads after
-	// ANSI is stripped (the accent pill background vanishes when piped).
-	overview := inactive.Render("Overview")
-	models := inactive.Render("Models")
-	if tab == TabModels {
-		models = active.Render("[ Models ]")
-	} else {
-		overview = active.Render("[ Overview ]")
-	}
-	left := lipgloss.JoinHorizontal(lipgloss.Center, overview, " ", models)
-
-	right := renderRange(rng)
-
-	gap := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
+// rightAlign places right at the far edge of a w-wide line, left at the start,
+// padded with plain spaces between (invisible without a background).
+func rightAlign(left, right string, w int) string {
+	gap := w - lipgloss.Width(left) - lipgloss.Width(right)
 	if gap < 1 {
 		gap = 1
 	}
-	spacer := styled(cardBG).Render(strings.Repeat(" ", gap))
-	return lipgloss.JoinHorizontal(lipgloss.Center, left, spacer, right)
+	return left + strings.Repeat(" ", gap) + right
 }
 
-func renderRange(rng string) string {
-	active := lipgloss.NewStyle().
-		Background(segInactBG).Foreground(value).Bold(true).Padding(0, 1)
-	if ascii() {
-		active = active.Underline(true) // distinguish the active range when piped
-	}
-	inactive := lipgloss.NewStyle().
-		Background(cardBG).Foreground(muted).Padding(0, 1)
+// ---- header: tabs (left) + range (right) ----
 
+func renderHeader(th Theme, tab, rng string) string {
+	activeTab := func(lbl string) string { return styled(th.Accent).Bold(true).Render("[ " + lbl + " ]") }
+	inactiveTab := func(lbl string) string { return styled(label).Render(lbl) }
+
+	ov, md := activeTab("Overview"), inactiveTab("Models")
+	if tab == TabModels {
+		ov, md = inactiveTab("Overview"), activeTab("Models")
+	}
+	return rightAlign(ov+"  "+md, renderRange(th, rng), contentW)
+}
+
+func renderRange(th Theme, rng string) string {
+	plain := ascii()
 	seg := func(key, lbl string) string {
 		if rng == key {
-			return active.Render(lbl)
+			st := styled(th.Accent).Bold(true)
+			if plain {
+				st = st.Underline(true) // distinguish the active range when piped
+			}
+			return st.Render(lbl)
 		}
-		return inactive.Render(lbl)
+		return styled(muted).Render(lbl)
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Center,
-		seg(core.RangeAll, "All"),
-		seg(core.Range30d, "30d"),
-		seg(core.Range7d, "7d"),
-	)
+	return seg(core.RangeAll, "All") + "  " + seg(core.Range30d, "30d") + "  " + seg(core.Range7d, "7d")
 }
 
 // ---- neofetch banner: logo column | key·value info column ----
@@ -149,12 +108,11 @@ func renderBanner(th Theme, s core.Summary) string {
 	title := styled(th.Accent).Bold(true).Render(host) +
 		styled(muted).Render("@") +
 		styled(th.Accent).Bold(true).Render(th.Name)
-	titleW := lipgloss.Width(host) + 1 + lipgloss.Width(th.Name)
-	underline := styled(th.Accent).Render(strings.Repeat("─", titleW))
+	underline := styled(th.Accent).Render(strings.Repeat("─", lipgloss.Width(host)+1+lipgloss.Width(th.Name)))
 
 	info := []string{
-		padBGTo(title, infoW),
-		padBGTo(underline, infoW),
+		title,
+		underline,
 		leaderRow("sessions", core.FormatInt(s.Sessions), infoW),
 		leaderRow("messages", core.FormatInt(s.Messages), infoW),
 		leaderRow("tokens", core.FormatTokens(s.TotalTokens), infoW),
@@ -164,26 +122,20 @@ func renderBanner(th Theme, s core.Summary) string {
 		leaderRow("fav model", s.FavModel, infoW),
 	}
 
-	// Top-align the logo with the title; a full-height rule separates the two
-	// panes so the info list reading on past the logo's last row looks intended.
-	divider := styled(cardBG).Render(" ") +
-		lipgloss.NewStyle().Background(cardBG).Foreground(border).Render("│") +
-		styled(cardBG).Render(" ")
+	gap := strings.Repeat(" ", bannerGap)
 	rows := make([]string, len(info))
 	for i := range info {
-		var logo string
+		logo := strings.Repeat(" ", logoW)
 		if i < len(logoArt) {
-			logo = styled(th.Accent).Render(padRight(logoArt[i], logoW))
-		} else {
-			logo = styled(cardBG).Render(strings.Repeat(" ", logoW))
+			logo = styled(th.Accent).Render(logoArt[i])
 		}
-		rows[i] = padBG(logo + divider + info[i])
+		rows[i] = logo + gap + info[i]
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	return strings.Join(rows, "\n")
 }
 
-// leaderRow renders a neofetch-style "key ···· value" line padded to colW, with
-// computed dot leaders so values right-align. The value is truncated to fit.
+// leaderRow renders a neofetch-style "key ···· value" line exactly colW wide, so
+// the value right-aligns to a shared column. The value is truncated to fit.
 func leaderRow(key, val string, colW int) string {
 	kW := lipgloss.Width(key)
 	maxVal := colW - kW - 3 // space + at least one dot + space
@@ -195,31 +147,28 @@ func leaderRow(key, val string, colW int) string {
 	if n < 1 {
 		n = 1
 	}
-	line := styled(label).Render(key) +
+	return styled(label).Render(key) +
 		styled(muted).Render(" "+strings.Repeat("·", n)+" ") +
 		styled(value).Bold(true).Render(val)
-	return padBGTo(line, colW)
 }
 
 // ---- contribution graph (GitHub-style hero) ----
 
 func sectionTitle(th Theme, weeks int) string {
-	return padBG(styled(th.Accent).Bold(true).Render("Contributions") +
-		styled(muted).Render(fmt.Sprintf(" · last %d weeks", weeks)))
+	return styled(th.Accent).Bold(true).Render("Contributions") +
+		styled(muted).Render(fmt.Sprintf(" · last %d weeks", weeks))
 }
 
 func renderHeatmap(th Theme, h core.Heatmap) string {
 	if h.Weeks <= 0 {
 		return ""
 	}
-	// Defensive: never let a caller-supplied week count overflow innerWidth.
-	// A grid row is gutterW + 3*cols - 1 cells wide; production always passes 22.
+	// Defensive: a grid row is gutterW + 3*cols - 1 cells wide; production passes 22.
 	cols := h.Weeks
-	if maxCols := (innerWidth - gutterW + 1) / 3; cols > maxCols {
+	if maxCols := (contentW - gutterW + 1) / 3; cols > maxCols {
 		cols = maxCols
 	}
 	plain := ascii()
-	gapCell := styled(cardBG).Render(" ")
 	gut := [7]string{"    ", "Mon ", "    ", "Wed ", "    ", "Fri ", "    "}
 
 	rows := make([]string, 0, 10)
@@ -229,32 +178,33 @@ func renderHeatmap(th Theme, h core.Heatmap) string {
 		sb.WriteString(styled(label).Render(gut[r]))
 		for col := 0; col < cols; col++ {
 			if col > 0 {
-				sb.WriteString(gapCell)
+				sb.WriteString(" ")
 			}
 			sb.WriteString(heatCell(th, h.Cells[r][col], h.Max, plain))
 		}
-		rows = append(rows, padBG(sb.String()))
+		rows = append(rows, sb.String())
 	}
-	rows = append(rows, padBG(""), renderLegend(th, plain))
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	rows = append(rows, "", renderLegend(th, plain))
+	return strings.Join(rows, "\n")
 }
 
 func heatCell(th Theme, v, max int64, plain bool) string {
-	if v < 0 { // future → ragged blank corner
-		return styled(cardBG).Render("  ")
+	if v < 0 { // future → blank
+		return "  "
 	}
 	if plain {
 		return shadeGlyphs[th.levelIndex(v, max)]
 	}
-	return lipgloss.NewStyle().Background(th.level(v, max)).Render("  ")
+	return styled(th.level(v, max)).Render("██") // foreground block, no background
 }
 
-// renderMonthRow places 3-letter month abbreviations above the column where
-// each month begins. If that first column collides with the previous label, the
-// month is deferred to its next column rather than dropped — `placed` advances
-// only after a label is actually written.
+// renderMonthRow places 3-letter month abbreviations above the column where each
+// month begins. If the first column collides with the previous label the month
+// is deferred to its next column rather than dropped (placed advances only after
+// a label is written).
 func renderMonthRow(h core.Heatmap, cols int) string {
-	buf := make([]rune, innerWidth)
+	rowW := gutterW + cols*3
+	buf := make([]rune, rowW)
 	for i := range buf {
 		buf[i] = ' '
 	}
@@ -266,8 +216,8 @@ func renderMonthRow(h core.Heatmap, cols int) string {
 			continue
 		}
 		x := gutterW + col*3
-		if x < lastEnd+1 || x+3 > innerWidth {
-			continue // collides; a later column of the same month will retry
+		if x < lastEnd+1 || x+3 > rowW {
+			continue
 		}
 		ab := d.Format("Jan")
 		for i := 0; i < len(ab); i++ {
@@ -276,7 +226,7 @@ func renderMonthRow(h core.Heatmap, cols int) string {
 		placed = d.Month()
 		lastEnd = x + 3
 	}
-	return styled(label).Render(string(buf))
+	return styled(label).Render(strings.TrimRight(string(buf), " "))
 }
 
 func renderLegend(th Theme, plain bool) string {
@@ -284,48 +234,46 @@ func renderLegend(th Theme, plain bool) string {
 		if plain {
 			return shadeGlyphs[i]
 		}
-		return lipgloss.NewStyle().Background(th.Ramp[i]).Render("  ")
+		return styled(th.Ramp[i]).Render("██")
 	}
 	parts := []string{styled(muted).Render("Less ")}
 	for i := 0; i < 5; i++ {
 		if i > 0 {
-			parts = append(parts, styled(cardBG).Render(" "))
+			parts = append(parts, " ")
 		}
 		parts = append(parts, cell(i))
 	}
 	parts = append(parts, styled(muted).Render(" More"))
 	legend := strings.Join(parts, "")
 
-	pad := innerWidth - lipgloss.Width(legend)
+	pad := contentW - lipgloss.Width(legend)
 	if pad < 0 {
 		pad = 0
 	}
-	return styled(cardBG).Render(strings.Repeat(" ", pad)) + legend
+	return strings.Repeat(" ", pad) + legend
 }
 
-// ---- neofetch palette: two rows of pastel colour swatches ----
+// ---- neofetch palette: two rows of the terminal's own ANSI colours ----
 
 func renderSwatches() string {
-	row := func(cols [8]lipgloss.Color) string {
+	row := func(start int) string {
 		var sb strings.Builder
-		for i, c := range cols {
+		for i := 0; i < 8; i++ {
 			if i > 0 {
-				sb.WriteString(styled(cardBG).Render(" "))
+				sb.WriteString(" ")
 			}
-			// Foreground (not Background) so the █ blocks survive ANSI stripping
-			// as the palette silhouette when piped.
-			sb.WriteString(lipgloss.NewStyle().Background(cardBG).Foreground(c).Render("██"))
+			sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.ANSIColor(uint(start + i))).Render("██"))
 		}
-		return padBG(sb.String())
+		return sb.String()
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, row(swatchNormal), row(swatchBright))
+	return row(0) + "\n" + row(8)
 }
 
 // ---- models tab ----
 
 func renderModels(th Theme, s core.Summary) string {
 	if len(s.Models) == 0 {
-		return padBG(styled(muted).Render("No model usage recorded."))
+		return styled(muted).Render("No model usage recorded.")
 	}
 	models := s.Models
 	if len(models) > 8 {
@@ -337,7 +285,6 @@ func renderModels(th Theme, s core.Summary) string {
 			max = m.Tokens
 		}
 	}
-
 	var total int64
 	for _, m := range s.Models {
 		total += m.Tokens
@@ -345,8 +292,8 @@ func renderModels(th Theme, s core.Summary) string {
 
 	const nameW = 16
 	const metaW = 16 // "  " + 7 tokens + "  " + 5 pct
-	barW := innerWidth - nameW - metaW
-	rows := make([]string, 0, len(models)+2)
+	barW := contentW - nameW - metaW
+	rows := []string{styled(th.Accent).Bold(true).Render("Token share by model"), ""}
 	for _, m := range models {
 		name := styled(value).Bold(true).Render(padRight(truncate(m.Name, nameW), nameW))
 
@@ -357,9 +304,9 @@ func renderModels(th Theme, s core.Summary) string {
 		if filled > barW {
 			filled = barW
 		}
-		barCol := th.level(m.Tokens, max)
-		bar := lipgloss.NewStyle().Background(barCol).Render(strings.Repeat(" ", filled)) +
-			lipgloss.NewStyle().Background(emptyCell).Render(strings.Repeat(" ", barW-filled))
+		// filled run in the ramp colour; the rest is plain spaces (no heavy track)
+		bar := styled(th.level(m.Tokens, max)).Render(strings.Repeat("█", filled)) +
+			strings.Repeat(" ", barW-filled)
 
 		pct := "—"
 		if total > 0 {
@@ -373,10 +320,9 @@ func renderModels(th Theme, s core.Summary) string {
 		meta := styled(label).Render("  "+padLeft(truncate(core.FormatTokens(m.Tokens), 7), 7)+"  ") +
 			styled(muted).Render(padLeft(pct, 5))
 
-		rows = append(rows, lipgloss.JoinHorizontal(lipgloss.Center, name, bar, meta))
+		rows = append(rows, name+bar+meta)
 	}
-	heading := padBG(styled(th.Accent).Bold(true).Render("Token share by model"))
-	return lipgloss.JoinVertical(lipgloss.Left, heading, "", lipgloss.JoinVertical(lipgloss.Left, rows...))
+	return strings.Join(rows, "\n")
 }
 
 // ---- footer ----
@@ -390,16 +336,11 @@ func renderFooter(th Theme, s core.Summary) string {
 	}
 	right := styled(th.Accent).Render(tag + " · " + rangeLabel(s.Range))
 
-	hobMax := innerWidth - lipgloss.Width(marker) - lipgloss.Width(right) - 2
+	hobMax := contentW - lipgloss.Width(marker) - lipgloss.Width(right) - 2
 	hob := truncate(core.HobbitLine(s.HobbitFactor), hobMax)
 	left := marker + styled(muted).Italic(true).Render(hob)
 
-	gap := innerWidth - lipgloss.Width(left) - lipgloss.Width(right)
-	if gap < 1 {
-		gap = 1
-	}
-	spacer := styled(cardBG).Render(strings.Repeat(" ", gap))
-	return padBG(lipgloss.JoinHorizontal(lipgloss.Center, left, spacer, right))
+	return rightAlign(left, right, contentW)
 }
 
 func rangeLabel(r string) string {
@@ -418,16 +359,14 @@ func Hint(s string) string {
 	return lipgloss.NewStyle().Foreground(muted).Italic(true).Render("  " + s)
 }
 
-// UpdateNotice renders the "a newer version is available" line shown under the
-// card when the launch-time update check finds a release.
+// UpdateNotice renders the "a newer version is available" line.
 func UpdateNotice(latest string) string {
 	accent := ThemeFor(core.Combined).Accent
-	arrow := lipgloss.NewStyle().Foreground(accent).Bold(true).Render("  ↑ ")
-	body := lipgloss.NewStyle().Foreground(muted).Render("tmax ") +
+	return lipgloss.NewStyle().Foreground(accent).Bold(true).Render("  ↑ ") +
+		styled(muted).Render("tmax ") +
 		lipgloss.NewStyle().Foreground(accent).Bold(true).Render(latest) +
-		lipgloss.NewStyle().Foreground(muted).Render(" is available — run ") +
-		lipgloss.NewStyle().Foreground(value).Render("tmax upgrade")
-	return arrow + body
+		styled(muted).Render(" is available — run ") +
+		styled(value).Render("tmax upgrade")
 }
 
 // ---- small helpers ----
@@ -437,19 +376,6 @@ func hostUser() string {
 		return u
 	}
 	return "you"
-}
-
-// padBG right-pads a styled line to innerWidth with the card background.
-func padBG(s string) string { return padBGTo(s, innerWidth) }
-
-// padBGTo right-pads a styled line to w cells with the card background, so
-// trailing space after a style reset doesn't render as the terminal default.
-func padBGTo(s string, w int) string {
-	d := w - lipgloss.Width(s)
-	if d <= 0 {
-		return s
-	}
-	return s + styled(cardBG).Render(strings.Repeat(" ", d))
 }
 
 func truncate(s string, w int) string {

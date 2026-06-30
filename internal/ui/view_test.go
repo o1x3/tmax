@@ -15,6 +15,7 @@ import (
 func init() {
 	// deterministic colour output for width assertions
 	lipgloss.SetColorProfile(termenv.TrueColor)
+	lipgloss.SetHasDarkBackground(true)
 }
 
 var ansi = regexp.MustCompile(`\x1b\[[0-9;]*m`)
@@ -61,25 +62,54 @@ func TestRenderCardModels(t *testing.T) {
 	}
 }
 
-// Every rendered line must be the same display width — guards against the
-// wrapping / ragged-background bugs we hit during development.
-func TestRenderCardUniformWidth(t *testing.T) {
+// The card paints no background, so lines are intentionally ragged — but none
+// should exceed the terminal width budget (guards against wrapping / overflow).
+func TestRenderCardMaxWidth(t *testing.T) {
 	for _, tab := range []string{TabOverview, TabModels} {
 		out := RenderCard(sampleSummary(tab), tab)
-		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-		w0 := dispWidth(lines[0])
-		if w0 == 0 {
-			t.Fatalf("%s: first line empty", tab)
-		}
-		for i, l := range lines {
-			if w := dispWidth(l); w != w0 {
-				t.Errorf("%s line %d width %d != %d:\n%q", tab, i, w, w0, l)
+		for i, l := range strings.Split(out, "\n") {
+			if w := dispWidth(l); w > 80 {
+				t.Errorf("%s line %d width %d exceeds 80 cols:\n%q", tab, i, w, l)
 			}
 		}
-		if w0 > 80 {
-			t.Errorf("%s width %d exceeds 80 cols", tab, w0)
+	}
+}
+
+// The card must be fully transparent — no SGR sets a background colour, so it
+// blends with the terminal (the whole point of the seamless redesign).
+func TestRenderCardNoBackground(t *testing.T) {
+	for _, tab := range []string{TabOverview, TabModels} {
+		if hasBackgroundSGR(RenderCard(sampleSummary(tab), tab)) {
+			t.Errorf("%s sets a background colour; output must be transparent", tab)
 		}
 	}
+}
+
+// hasBackgroundSGR parses SGR sequences and reports whether any sets a
+// background, correctly skipping 38;2;r;g;b foreground channels (a channel of
+// 48 must not be mistaken for the 48 background introducer).
+func hasBackgroundSGR(s string) bool {
+	for _, m := range ansi.FindAllStringSubmatch(s, -1) {
+		ps := strings.Split(strings.Trim(m[0], "\x1b[m"), ";")
+		for i := 0; i < len(ps); i++ {
+			switch ps[i] {
+			case "38", "48": // extended fg/bg: consume the colour spec
+				bg := ps[i] == "48"
+				if i+1 < len(ps) && ps[i+1] == "5" {
+					i += 2
+				} else if i+1 < len(ps) && ps[i+1] == "2" {
+					i += 4
+				}
+				if bg {
+					return true
+				}
+			case "40", "41", "42", "43", "44", "45", "46", "47", "49",
+				"100", "101", "102", "103", "104", "105", "106", "107":
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // A month that spans several columns must always get a label, even when its
@@ -100,18 +130,16 @@ func TestMonthRowNoDroppedMonth(t *testing.T) {
 }
 
 // When colour is stripped (piped output) the heatmap falls back to shade
-// glyphs and the swatches to █ blocks; the card must still be uniform width.
+// glyphs and the swatches to █ blocks; lines must still stay within budget.
 func TestRenderCardAsciiWidth(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.Ascii)
 	defer lipgloss.SetColorProfile(termenv.TrueColor)
 
 	for _, tab := range []string{TabOverview, TabModels} {
 		out := RenderCard(sampleSummary(tab), tab)
-		lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
-		w0 := dispWidth(lines[0])
-		for i, l := range lines {
-			if w := dispWidth(l); w != w0 {
-				t.Errorf("ascii %s line %d width %d != %d:\n%q", tab, i, w, w0, l)
+		for i, l := range strings.Split(out, "\n") {
+			if w := dispWidth(l); w > 80 {
+				t.Errorf("ascii %s line %d width %d exceeds 80:\n%q", tab, i, w, l)
 			}
 		}
 	}

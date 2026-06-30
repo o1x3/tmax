@@ -1,4 +1,7 @@
-// Package ui renders the tmax dashboard card with lipgloss.
+// Package ui renders the tmax dashboard with lipgloss. It paints no background
+// and draws no border — everything is foreground colour on the terminal's own
+// background (neofetch/fastfetch style), with colours that adapt to a light or
+// dark terminal.
 package ui
 
 import (
@@ -7,65 +10,73 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
-// Theme is a pastel colour scheme. Each harness gets its own accent + heatmap
-// ramp so a glance tells you which harness you're looking at.
-type Theme struct {
-	Name   string
-	Accent lipgloss.Color    // pill + headline accent
-	Ramp   [5]lipgloss.Color // heatmap intensity: [0]=empty .. [4]=hottest
+// adapt is a light/dark colour pair; lipgloss resolves it against the detected
+// terminal background at render time.
+func adapt(light, dark string) lipgloss.AdaptiveColor {
+	return lipgloss.AdaptiveColor{Light: light, Dark: dark}
 }
 
-// shared chrome colours (dark card, pastel text)
+// Shared text roles. No backgrounds — these are foreground colours chosen to
+// stay legible on either a light or a dark terminal.
 var (
-	cardBG     = lipgloss.Color("#15151c")
-	border     = lipgloss.Color("#2c2c39")
-	boxBG      = lipgloss.Color("#1d1d27")
-	pillText   = lipgloss.Color("#15151c")
-	title      = lipgloss.Color("#e9e9f2")
-	label      = lipgloss.Color("#7a7a8c")
-	value      = lipgloss.Color("#f2f2f7")
-	muted      = lipgloss.Color("#565668")
-	segInactBG = lipgloss.Color("#23232f")
-	emptyCell  = lipgloss.Color("#23232e")
+	label = adapt("#6a6a78", "#8b8b9c") // row labels, weekday/month labels
+	value = adapt("#17171f", "#f2f2f7") // numbers, active text (near-fg on both)
+	muted = adapt("#9a9aa6", "#565668") // dot leaders, Less/More, hobbit line
 )
+
+// Theme is a per-harness accent + 5-step heatmap ramp. Each colour is a
+// light/dark pair so a glance tells you the harness on any terminal.
+type Theme struct {
+	Name   string
+	Accent lipgloss.TerminalColor
+	Ramp   [5]lipgloss.TerminalColor // [0]=empty .. [4]=hottest
+}
 
 // ThemeFor returns the palette for a harness key.
 func ThemeFor(harness string) Theme {
 	switch harness {
 	case core.Claude:
-		// warm peach / coral — Claude's house colour, softened
+		// warm peach / coral
 		return Theme{
 			Name:   "claude",
-			Accent: "#f0b48a",
-			Ramp: [5]lipgloss.Color{
-				emptyCell, "#5c4433", "#9c6b4a", "#d99e76", "#ffcea8",
+			Accent: adapt("#c2632e", "#f0b48a"),
+			Ramp: [5]lipgloss.TerminalColor{
+				adapt("#f0e7e0", "#2e2a26"), adapt("#f3d8c2", "#5c4433"),
+				adapt("#e6a878", "#9c6b4a"), adapt("#d17d3f", "#d99e76"),
+				adapt("#b35a1d", "#ffcea8"),
 			},
 		}
 	case core.Codex:
 		// mint / sea green
 		return Theme{
 			Name:   "codex",
-			Accent: "#86e0b3",
-			Ramp: [5]lipgloss.Color{
-				emptyCell, "#2f5040", "#4e8467", "#7fc2a0", "#bdf3d8",
+			Accent: adapt("#1f8a5a", "#86e0b3"),
+			Ramp: [5]lipgloss.TerminalColor{
+				adapt("#e3efe8", "#26302b"), adapt("#c2e6d2", "#2f5040"),
+				adapt("#7fc7a0", "#4e8467"), adapt("#3da876", "#7fc2a0"),
+				adapt("#1c7f52", "#bdf3d8"),
 			},
 		}
 	case core.Pi:
 		// lavender / periwinkle
 		return Theme{
 			Name:   "pi",
-			Accent: "#b9a6ec",
-			Ramp: [5]lipgloss.Color{
-				emptyCell, "#473a5e", "#6f5a99", "#a48fd0", "#dccbff",
+			Accent: adapt("#6b4fc0", "#b9a6ec"),
+			Ramp: [5]lipgloss.TerminalColor{
+				adapt("#ebe8f3", "#2b2735"), adapt("#d8cdf0", "#473a5e"),
+				adapt("#b09ce0", "#6f5a99"), adapt("#8669cf", "#a48fd0"),
+				adapt("#5a3eb5", "#dccbff"),
 			},
 		}
 	default:
-		// pastel blue — matches the reference
+		// pastel blue
 		return Theme{
 			Name:   "all",
-			Accent: "#9cc0f5",
-			Ramp: [5]lipgloss.Color{
-				emptyCell, "#34415c", "#52719f", "#86acde", "#c1dbff",
+			Accent: adapt("#2f6fd0", "#9cc0f5"),
+			Ramp: [5]lipgloss.TerminalColor{
+				adapt("#e9ebf0", "#2a2a36"), adapt("#cdddf6", "#34415c"),
+				adapt("#93b6ea", "#52719f"), adapt("#5689d6", "#86acde"),
+				adapt("#2563b5", "#c1dbff"),
 			},
 		}
 	}
@@ -93,22 +104,10 @@ func (t Theme) levelIndex(v, max int64) int {
 	}
 }
 
-// level maps a token count to its pastel ramp colour.
-func (t Theme) level(v, max int64) lipgloss.Color { return t.Ramp[t.levelIndex(v, max)] }
+// level maps a token count to its ramp colour.
+func (t Theme) level(v, max int64) lipgloss.TerminalColor { return t.Ramp[t.levelIndex(v, max)] }
 
 // shadeGlyphs renders each ramp level as a 2-cell printable block, used when
 // colour is unavailable (piped / ANSI stripped) so the heatmap density still
-// reads structurally rather than collapsing to blank space.
+// reads as character structure.
 var shadeGlyphs = [5]string{"  ", "░░", "▒▒", "▓▓", "██"}
-
-// neofetch-style palette swatches: two rows of eight pastel hues (normal +
-// bright). Decorative, constant across harnesses — every harness accent is
-// itself present in the spread, so the card always shows its own colour.
-var (
-	swatchNormal = [8]lipgloss.Color{
-		"#e8a0ad", "#f0b48a", "#ecd9a0", "#86e0b3", "#9fd8d8", "#9cc0f5", "#b9a6ec", "#e3a8d4",
-	}
-	swatchBright = [8]lipgloss.Color{
-		"#f2c2cb", "#f8d2b6", "#f5e8c6", "#b6efd0", "#c8eaea", "#c4dafa", "#d6caf6", "#f0c8e6",
-	}
-)

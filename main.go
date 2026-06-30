@@ -99,6 +99,11 @@ COMMANDS
   upgrade           download and install the latest release
   version           print the installed version
 
+ENV
+  TMAX_BACKGROUND      light|dark — override terminal background detection
+  TMAX_NO_UPDATE_CHECK set to skip the daily update check
+  TMAX_TRUECOLOR       set to force 24-bit colour
+
 EXAMPLES
   tmax              tmax codex 7d        tmax claude models     tmax pi -i`
 
@@ -126,6 +131,19 @@ func main() {
 		lipgloss.SetColorProfile(termenv.TrueColor)
 	case !tty:
 		lipgloss.SetColorProfile(termenv.Ascii)
+	}
+
+	// Light/dark detection so foreground colours stay legible on any terminal.
+	// tmax paints no background; it adapts to yours. TMAX_BACKGROUND overrides.
+	switch os.Getenv("TMAX_BACKGROUND") {
+	case "light":
+		lipgloss.SetHasDarkBackground(false)
+	case "dark":
+		lipgloss.SetHasDarkBackground(true)
+	default:
+		if tty {
+			lipgloss.SetHasDarkBackground(termenv.HasDarkBackground())
+		}
 	}
 
 	o, err := parseArgs(args)
