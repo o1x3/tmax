@@ -1,0 +1,14 @@
+# compiled binary (named after the module)
+/tmax
+
+# goreleaser output
+/dist/
+
+# test / coverage artifacts
+*.test
+*.out
+coverage.*
+
+# editor / OS cruft
+.DS_Store
+*.swp

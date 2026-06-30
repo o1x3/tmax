@@ -1,0 +1,62 @@
+# GoReleaser v2 — https://goreleaser.com
+version: 2
+
+project_name: tmax
+
+before:
+  hooks:
+    - go mod download
+
+builds:
+  - id: tmax
+    main: .
+    binary: tmax
+    env:
+      - CGO_ENABLED=0
+    goos: [darwin, linux]
+    goarch: [amd64, arm64]
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+
+archives:
+  # Stable, version-less asset names (tmax_darwin_arm64.tar.gz) so the installer
+  # and `tmax upgrade` can resolve a predictable URL per release.
+  - id: tmax
+    name_template: "{{ .ProjectName }}_{{ .Os }}_{{ .Arch }}"
+    formats: [tar.gz]
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^chore:"
+      - "^ci:"
+      - "Merge pull request"
+      - "Merge branch"
+
+release:
+  github:
+    owner: o1x3
+    name: tmax
+  draft: false
+  prerelease: auto
+  name_template: "tmax {{ .Tag }}"
+  footer: |
+    ---
+    Install or update:
+
+    ```sh
+    curl -fsSL https://raw.githubusercontent.com/o1x3/tmax/main/install.sh | sh
+    ```
