@@ -16,10 +16,14 @@
 </p>
 
 A blocky `tmax` wordmark and a `you@harness` info column up top, a GitHub-style
-contribution graph as the hero, and a neofetch colour-swatch palette along the
-bottom. One glance shows your sessions, messages, tokens, streaks and activity —
-across **Claude Code**, **Codex** and **pi.dev**, together or one at a time.
-Everything reads from your local session logs; nothing leaves your machine.
+contribution graph as the hero, and a colour-swatch palette along the bottom.
+One glance shows your sessions, messages, tokens, streaks and activity — across
+**Claude Code**, **Codex** and **pi.dev**, together or one at a time.
+
+Like neofetch/fastfetch, tmax paints **no background and draws no border** — it
+sits directly on your terminal's own background, detects whether you're in a
+light or dark theme, and adapts its colours so it always blends in. Everything
+reads from your local session logs; nothing leaves your machine.
 
 ## Install
 
@@ -79,8 +83,8 @@ tmax pi -i           # pi.dev, interactive
 
 ## Looks
 
-Each harness gets its own pastel accent and matching heatmap ramp, so a glance
-tells you which one you're looking at.
+Each harness gets its own accent and matching heatmap ramp, so a glance tells
+you which one you're looking at.
 
 | | |
 |---|---|
@@ -89,10 +93,16 @@ tells you which one you're looking at.
 | <img src="docs/pi.png" alt="pi" width="380"> | <img src="docs/models.png" alt="models" width="380"> |
 | **pi.dev** — lavender | **Models** tab |
 
-Output is full pastel in a truecolor terminal and degrades gracefully when
-piped or redirected — the heatmap falls back to shade glyphs (`░▒▓█`) and every
-signal is carried by a character, not just colour, so it stays legible.
-`TMAX_TRUECOLOR=1` forces 24-bit colour (useful for capture).
+**Light or dark — automatically.** tmax detects your terminal background and
+flips its whole palette to match; the swatch row mirrors your terminal's own 16
+ANSI colours, so it inherits your theme rather than imposing one.
+
+<p align="center"><img src="docs/light.png" alt="tmax in a light terminal" width="560"></p>
+
+Force it either way with `TMAX_BACKGROUND=light|dark` if auto-detection guesses
+wrong. When piped or redirected, colour is stripped and the heatmap falls back
+to shade glyphs (`░▒▓█`) so it stays legible as plain text; `TMAX_TRUECOLOR=1`
+forces 24-bit colour (useful for capture).
 
 ## Staying up to date
 
